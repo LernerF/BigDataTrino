@@ -1,0 +1,107 @@
+services:
+  postgres:
+    container_name: spark_db
+    image: postgres:18.3-alpine
+    environment:
+      POSTGRES_DB: spark_db
+      POSTGRES_USER: meow
+      POSTGRES_PASSWORD: UwU
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./source_data:/source_data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - meowork
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meow -d spark_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+      - "9009:9009"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./source_data:/var/lib/clickhouse/source_data
+      - ./clickhouse/init.sh:/docker-entrypoint-initdb.d/init.sh
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    environment:
+      - CLICKHOUSE_USER=meow
+      - CLICKHOUSE_PASSWORD=UwU
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    networks:
+      - meowork
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user meow --password UwU --query 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  clickhouse-init:
+    image: clickhouse/clickhouse-server:latest
+    depends_on:
+      - clickhouse
+    volumes:
+      - ./clickhouse/init.sh:/init.sh
+      - ./source_data:/source_data
+    entrypoint:
+      - sh
+      - -c
+      - |
+        chmod +x /init.sh
+        /init.sh
+    networks:
+      - meowork
+
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./sql:/etl
+      - ./trino/config:/etc/trino    
+    networks:
+      - meowork
+  
+  trino-init:
+    image: trinodb/trino:latest
+    depends_on:
+      - trino
+      - postgres
+      - clickhouse-init
+    volumes:
+      - ./sql:/etl
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until trino --server trino:8080 --execute "SHOW CATALOGS" >/dev/null 2>&1; do
+          echo "Waiting for Trino..."
+          sleep 5
+        done
+        echo "Waiting for databases to be ready..."
+        sleep 10
+        echo "Running ETL script..."
+        trino --server trino:8080 --file /etl/etl.sql
+        echo "ETL completed successfully!"
+    networks:
+      - meowork
+
+networks:
+  meowork:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  clickhouse_data:
